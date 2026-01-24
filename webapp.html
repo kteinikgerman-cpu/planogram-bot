@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Сканер штрихкода</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="https://unpkg.com/@zxing/library@0.21.2/umd/index.min.js"></script>
+  <style>
+    body { font-family: system-ui, Arial; margin: 16px; }
+    h2 { margin: 0 0 10px; }
+    #video { width: 100%; max-width: 520px; border-radius: 12px; background: #000; }
+    .row { margin-top: 12px; display: flex; gap: 10px; flex-wrap: wrap; }
+    button, input {
+      padding: 12px 14px; border-radius: 12px; border: 1px solid #ddd; background: #fff;
+      font-size: 16px;
+    }
+    input { flex: 1; min-width: 220px; }
+    .hint { color: #555; margin-top: 10px; line-height: 1.35; }
+    .code { font-size: 18px; font-weight: 700; margin-top: 10px; word-break: break-all; }
+    .status { margin-top: 10px; color: #333; }
+  </style>
+</head>
+<body>
+  <h2>📷 Сканер штрихкода</h2>
+
+  <video id="video" playsinline></video>
+
+  <div class="row">
+    <button id="startBtn">▶️ Старт</button>
+    <button id="stopBtn">⏹ Стоп</button>
+  </div>
+
+  <div class="row">
+    <input id="manual" placeholder="Если камера не работает — вставь EAN/SAP" inputmode="numeric" />
+    <button id="sendBtn">📤 Отправить</button>
+  </div>
+
+  <div class="hint">
+    Наведи камеру на штрихкод. После распознавания код отправится в бот автоматически.<br>
+    Если камера не открывается — разреши доступ к камере или воспользуйся ручным вводом.
+  </div>
+
+  <div class="status" id="status"></div>
+  <div class="code" id="lastCode"></div>
+
+  <script>
+    const tg = window.Telegram?.WebApp;
+    if (tg) tg.ready();
+
+    const video = document.getElementById("video");
+    const lastCode = document.getElementById("lastCode");
+    const statusEl = document.getElementById("status");
+    const startBtn = document.getElementById("startBtn");
+    const stopBtn = document.getElementById("stopBtn");
+    const manual = document.getElementById("manual");
+    const sendBtn = document.getElementById("sendBtn");
+
+    const codeReader = new ZXing.BrowserMultiFormatReader();
+    let controls = null;
+
+    function onlyDigits(s) {
+      return (s || "").replace(/\D/g, "");
+    }
+
+    function sendToBot(code) {
+      const digits = onlyDigits(code);
+      if (!digits || digits.length < 4) {
+        statusEl.textContent = "❌ Введи код (только цифры).";
+        return;
+      }
+      lastCode.textContent = "✅ " + digits;
+      statusEl.textContent = "Отправлено в бот…";
+
+      if (tg && tg.sendData) {
+        tg.sendData(digits);
+      } else {
+        alert("Telegram WebApp API недоступен. Открой через кнопку в боте.");
+      }
+    }
+
+    async function startScan() {
+      statusEl.textContent = "Запуск камеры…";
+      try {
+        controls = await codeReader.decodeFromVideoDevice(
+          null,
+          video,
+          (result, err, c) => {
+            if (result) {
+              const text = (result.getText() || "").trim();
+              const digits = onlyDigits(text);
+              if (digits.length >= 8) {
+                try { c.stop(); } catch(e) {}
+                statusEl.textContent = "Код распознан ✅";
+                sendToBot(digits);
+              }
+            }
+          }
+        );
+        statusEl.textContent = "Камера запущена. Наведи на штрихкод.";
+      } catch (e) {
+        statusEl.textContent = "❌ Не удалось открыть камеру. Разреши доступ к камере или используй ручной ввод.";
+        console.error(e);
+      }
+    }
+
+    function stopScan() {
+      try { if (controls) controls.stop(); } catch(e) {}
+      controls = null;
+      statusEl.textContent = "Сканирование остановлено.";
+    }
+
+    startBtn.addEventListener("click", startScan);
+    stopBtn.addEventListener("click", stopScan);
+
+    sendBtn.addEventListener("click", () => sendToBot(manual.value));
+    manual.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") sendToBot(manual.value);
+    });
+
+    // Не автозапускаем камеру — в некоторых телефонах блокируется без клика
+    statusEl.textContent = "Нажми ▶️ Старт, чтобы включить камеру.";
+  </script>
+</body>
+</html>
