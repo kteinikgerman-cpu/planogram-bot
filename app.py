@@ -19,23 +19,42 @@ from telegram.ext import (
 )
 
 # =========================
-# НАСТРОЙКИ
+# НАСТРОЙКИ / ENV
 # =========================
-ADMIN_ID = int(os.getenv("ADMIN_ID", "1049972328"))
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 DB_FILE = "db.xlsx"
 
-PUBLIC_WEBAPP_URL = os.getenv("PUBLIC_WEBAPP_URL", "").strip()
+# ADMIN_ID можно хранить в Render → Environment (рекомендую)
+# если не задан — загрузка Excel будет недоступна
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0") or "0")
 
 REQUIRED_COLUMNS = [
     "EAN", "SAP", "Название", "Ряд", "Стеллаж", "Полка", "Позиция", "Фейсинг", "Упаковка"
 ]
 
 df_cache: pd.DataFrame | None = None
-ZWSP_RE = re.compile(r"[\u200b\u200c\u200d\uFEFF]")
 
 # =========================
-# FLASK (WebApp)
+# PUBLIC WEBAPP URL
+# =========================
+def guess_public_url_from_replit() -> str:
+    # Для Replit (если вдруг используешь)
+    if os.getenv("REPLIT_DEV_DOMAIN"):
+        return "https://" + os.getenv("REPLIT_DEV_DOMAIN").strip()
+
+    if os.getenv("REPLIT_DOMAINS"):
+        dom = os.getenv("REPLIT_DOMAINS").split(",")[0].strip()
+        if dom:
+            return "https://" + dom
+
+    return ""
+
+# Главное: сначала берём из ENV (Render), иначе пробуем угадать (Replit)
+PUBLIC_WEBAPP_URL = (os.getenv("PUBLIC_WEBAPP_URL", "").strip()
+                     or guess_public_url_from_replit())
+
+# =========================
+# FLASK WEB SERVER (serves webapp.html)
 # =========================
 flask_app = Flask(__name__)
 
@@ -46,23 +65,20 @@ def index():
             html = f.read()
     except FileNotFoundError:
         html = "<h1>webapp.html not found</h1>"
+    return Response(html, mimetype="text/html")
 
-    resp = Response(html, mimetype="text/html; charset=utf-8")
-    resp.headers["Cache-Control"] = "no-store, max-age=0"
-    resp.headers["Permissions-Policy"] = "camera=(self)"
-    return resp
 
 def run_flask():
-    port = int(os.getenv("PORT", "10000"))  # Render даёт PORT автоматически
-    print(f"🌐 Flask on 0.0.0.0:{port}")
+    # Render прокидывает PORT
+    port = int(os.getenv("PORT", "3000"))
     flask_app.run(host="0.0.0.0", port=port)
+
 
 # =========================
 # DB
 # =========================
 def normalize_digits(value) -> str:
     s = "" if value is None else str(value)
-    s = ZWSP_RE.sub("", s)
     s = s.strip().replace(" ", "")
     s = re.sub(r"\.0$", "", s)
     return s
@@ -79,39 +95,26 @@ def load_db() -> int:
     if missing:
         raise ValueError("Не хватает колонок: " + ", ".join(missing))
 
-    for c in REQUIRED_COLUMNS:
-        df[c] = df[c].astype(str).map(lambda x: ZWSP_RE.sub("", x).strip())
-
     df["EAN"] = df["EAN"].apply(normalize_digits)
     df["SAP"] = df["SAP"].apply(normalize_digits)
 
     df_cache = df
     return len(df_cache)
 
+def format_answer(row: pd.Series) -> str:
+    return (
+        f"✅ *{row['Название']}*\n\n"
+        f"📍 Ряд: *{row['Ряд']}*\n"
+        f"📦 Стеллаж: *{row['Стеллаж']}*\n"
+        f"📐 Полка: *{row['Полка']}*\n"
+        f"➡️ Позиция: *{row['Позиция']}*\n"
+        f"👀 Фейсинг: *{row['Фейсинг']}*\n"
+        f"📦 Упаковка: *{row['Упаковка']}*"
+    )
+
 def is_digits(s: str) -> bool:
     return bool(re.fullmatch(r"\d+", s))
 
-def html_escape(s: str) -> str:
-    return (
-        str(s)
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-        .replace("'", "&#39;")
-    )
-
-def format_answer_html(row: pd.Series) -> str:
-    name = html_escape(row.get("Название", ""))
-    return (
-        f"✅ <b>{name}</b><br><br>"
-        f"📍 Ряд: <b>{html_escape(row.get('Ряд',''))}</b><br>"
-        f"📦 Стеллаж: <b>{html_escape(row.get('Стеллаж',''))}</b><br>"
-        f"📐 Полка: <b>{html_escape(row.get('Полка',''))}</b><br>"
-        f"➡️ Позиция: <b>{html_escape(row.get('Позиция',''))}</b><br>"
-        f"👀 Фейсинг: <b>{html_escape(row.get('Фейсинг',''))}</b><br>"
-        f"📦 Упаковка: <b>{html_escape(row.get('Упаковка',''))}</b>"
-    )
 
 # =========================
 # KEYBOARD
@@ -130,41 +133,48 @@ def get_keyboard(is_admin: bool) -> ReplyKeyboardMarkup:
     rows.append([KeyboardButton("ℹ️ Помощь")])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
+
 # =========================
 # BOT HANDLERS
 # =========================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    is_admin = update.effective_user and update.effective_user.id == ADMIN_ID
+    user_id = update.effective_user.id if update.effective_user else 0
+    is_admin = (ADMIN_ID != 0 and user_id == ADMIN_ID)
+
     await update.message.reply_text(
         "Привет! Я PlanogramHelper ✅\n\n"
         "Отправь EAN (штрихкод) или SAP (цифры).\n"
         "Либо нажми «📷 Сканировать».\n\n"
         "Админ может обновить базу кнопкой «📥 Загрузить Excel» или /upload.",
-        reply_markup=get_keyboard(bool(is_admin)),
+        reply_markup=get_keyboard(is_admin),
     )
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    is_admin = update.effective_user and update.effective_user.id == ADMIN_ID
+    user_id = update.effective_user.id if update.effective_user else 0
+    is_admin = (ADMIN_ID != 0 and user_id == ADMIN_ID)
+
     await update.message.reply_text(
-        "ℹ️ <b>Как пользоваться</b>\n\n"
+        "ℹ️ *Как пользоваться*\n\n"
         "• Вводишь/сканируешь EAN или SAP → я выдаю место.\n"
         "• Кнопка «📷 Сканировать» открывает камеру внутри Telegram.\n\n"
-        "<b>Админ</b>:\n"
+        "Админ:\n"
         "• «📥 Загрузить Excel» или /upload → отправляешь .xlsx как документ.\n\n"
         "Файл должен иметь колонки:\n"
         "EAN, SAP, Название, Ряд, Стеллаж, Полка, Позиция, Фейсинг, Упаковка",
-        parse_mode="HTML",
-        reply_markup=get_keyboard(bool(is_admin)),
+        parse_mode="Markdown",
+        reply_markup=get_keyboard(is_admin),
     )
 
 async def cmd_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.effective_user or update.effective_user.id != ADMIN_ID:
+    user_id = update.effective_user.id if update.effective_user else 0
+    if ADMIN_ID == 0 or user_id != ADMIN_ID:
         await update.message.reply_text("❌ Команда доступна только админу.")
         return
     await update.message.reply_text("📥 Отправь Excel-файл (.xlsx) одним документом.")
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.effective_user or update.effective_user.id != ADMIN_ID:
+    user_id = update.effective_user.id if update.effective_user else 0
+    if ADMIN_ID == 0 or user_id != ADMIN_ID:
         await update.message.reply_text("❌ Загружать базу может только админ.")
         return
 
@@ -190,14 +200,15 @@ async def search_and_reply(update: Update, query: str):
         await update.message.reply_text("⚠️ База ещё не загружена. Админ должен загрузить Excel через /upload.")
         return
 
-    q = normalize_digits(query)
+    q = query.replace(" ", "").strip()
     if not is_digits(q):
         await update.message.reply_text("❌ Нужны только цифры (EAN или SAP).")
         return
 
-    # Fallback: сначала попробуем EAN, потом SAP
-    found = df_cache[df_cache["EAN"] == q]
-    if found.empty:
+    # 8-14 цифр = EAN, иначе SAP
+    if 8 <= len(q) <= 14:
+        found = df_cache[df_cache["EAN"] == q]
+    else:
         found = df_cache[df_cache["SAP"] == q]
 
     if found.empty:
@@ -209,7 +220,7 @@ async def search_and_reply(update: Update, query: str):
         found = found.head(5)
 
     for _, row in found.iterrows():
-        await update.message.reply_text(format_answer_html(row), parse_mode="HTML")
+        await update.message.reply_text(format_answer(row), parse_mode="Markdown")
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or update.message.text is None:
@@ -231,17 +242,16 @@ async def handle_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     await search_and_reply(update, data)
 
+
 def run_bot():
     if not BOT_TOKEN:
-        raise RuntimeError("Не найден BOT_TOKEN (добавь в переменные окружения Render).")
+        raise RuntimeError("Не найден BOT_TOKEN. Добавь его в Render → Environment.")
 
+    # если база уже есть
     try:
         load_db()
-    except Exception as e:
-        print(f"DB load skipped: {e}")
-
-    print(f"📷 PUBLIC_WEBAPP_URL = {PUBLIC_WEBAPP_URL or '(empty)'}")
-    print("✅ Bot started")
+    except Exception:
+        pass
 
     app = Application.builder().token(BOT_TOKEN).build()
 
@@ -253,7 +263,9 @@ def run_bot():
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
+    print("✅ Bot started")
     app.run_polling()
+
 
 if __name__ == "__main__":
     # Flask в отдельном потоке
