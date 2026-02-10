@@ -8,7 +8,7 @@ BOT_TOKEN = "7564138089:AAFZm0WjZ_EObBCUb8KXxCmKKxk_YpZD5VM"
 EXCEL_FILE = 'base.xlsx'  # Файл будет загружен на GitHub
 WEB_APP_URL = 'https://kteinikgerman-cpu.github.io/planogram-bot/webapp.html'
 
-bot = telebot.TeleBot(BOT_TOKEN)
+bot = telebot.TeleBot(7564138089:AAFZm0WjZ_EObBCUb8KXxCmKKxk_YpZD5VM)
 
 def load_products():
     try:
