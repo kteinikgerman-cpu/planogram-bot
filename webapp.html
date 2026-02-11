@@ -7,22 +7,94 @@
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <script src="https://unpkg.com/@zxing/library@0.21.2/umd/index.min.js"></script>
   <style>
-    body { font-family: system-ui, Arial; margin: 16px; }
-    h2 { margin: 0 0 10px; }
-    #video { width: 100%; max-width: 520px; border-radius: 12px; background: #000; }
-    .row { margin-top: 12px; display: flex; gap: 10px; flex-wrap: wrap; }
-    button, input {
-      padding: 12px 14px; border-radius: 12px; border: 1px solid #ddd; background: #fff;
-      font-size: 16px;
+    body { 
+      font-family: system-ui, Arial; 
+      margin: 0;
+      padding: 16px;
+      background: var(--tg-theme-bg-color, #fff);
+      color: var(--tg-theme-text-color, #000);
     }
-    input { flex: 1; min-width: 220px; }
-    .hint { color: #555; margin-top: 10px; line-height: 1.35; }
-    .code { font-size: 18px; font-weight: 700; margin-top: 10px; word-break: break-all; }
-    .status { margin-top: 10px; color: #333; }
+    h2 { margin: 0 0 10px; }
+    #video { 
+      width: 100%; 
+      max-width: 520px; 
+      border-radius: 12px; 
+      background: #000; 
+      display: block;
+      margin: 0 auto;
+    }
+    .row { 
+      margin-top: 12px; 
+      display: flex; 
+      gap: 10px; 
+      flex-wrap: wrap; 
+      justify-content: center;
+    }
+    button, input {
+      padding: 12px 14px; 
+      border-radius: 12px; 
+      border: 1px solid #ddd; 
+      background: var(--tg-theme-button-color, #3390ec);
+      color: var(--tg-theme-button-text-color, #fff);
+      font-size: 16px;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    button:active {
+      opacity: 0.8;
+    }
+    input { 
+      flex: 1; 
+      min-width: 220px;
+      background: var(--tg-theme-bg-color, #fff);
+      color: var(--tg-theme-text-color, #000);
+    }
+    .hint { 
+      color: var(--tg-theme-hint-color, #999); 
+      margin-top: 10px; 
+      line-height: 1.35;
+      text-align: center;
+      font-size: 14px;
+    }
+    .code { 
+      font-size: 24px; 
+      font-weight: 700; 
+      margin-top: 15px; 
+      word-break: break-all;
+      text-align: center;
+      padding: 15px;
+      background: var(--tg-theme-secondary-bg-color, #f0f0f0);
+      border-radius: 12px;
+    }
+    .status { 
+      margin-top: 10px; 
+      color: var(--tg-theme-text-color, #333);
+      text-align: center;
+      font-weight: 500;
+    }
+    .success { color: #4CAF50; }
+    .error { color: #f44336; }
+    .warning { color: #ff9800; }
+    .confirm-buttons {
+      display: none;
+      gap: 10px;
+      margin-top: 10px;
+    }
+    .confirm-buttons.show {
+      display: flex;
+    }
+    .btn-success {
+      background: #4CAF50;
+      flex: 1;
+    }
+    .btn-danger {
+      background: #f44336;
+      flex: 1;
+    }
   </style>
 </head>
 <body>
-  <h2>📷 Сканер штрихкода</h2>
+  <h2 style="text-align: center;">📷 Сканер штрихкода</h2>
 
   <video id="video" playsinline></video>
 
@@ -31,56 +103,140 @@
     <button id="stopBtn">⏹ Стоп</button>
   </div>
 
+  <div class="status" id="status">Нажми ▶️ Старт для сканирования</div>
+  <div class="code" id="lastCode" style="display: none;"></div>
+  
+  <div class="row confirm-buttons" id="confirmButtons">
+    <button class="btn-success" id="confirmBtn">✅ Верно</button>
+    <button class="btn-danger" id="rejectBtn">❌ Неверно</button>
+  </div>
+
   <div class="row">
-    <input id="manual" placeholder="Если камера не работает — вставь EAN/SAP" inputmode="numeric" />
+    <input id="manual" placeholder="Или введите код вручную" inputmode="numeric" />
     <button id="sendBtn">📤 Отправить</button>
   </div>
 
   <div class="hint">
-    Наведи камеру на штрихкод. После распознавания код отправится в бот автоматически.<br>
-    Если камера не открывается — разреши доступ к камере или воспользуйся ручным вводом.
+    Наведите камеру на штрихкод.<br>
+    EAN-13 должен содержать 13 цифр.<br>
+    Проверьте код перед отправкой!
   </div>
-
-  <div class="status" id="status"></div>
-  <div class="code" id="lastCode"></div>
 
   <script>
     const tg = window.Telegram?.WebApp;
-    if (tg) tg.ready();
+    if (tg) {
+      tg.ready();
+      tg.expand();
+    }
 
     const video = document.getElementById("video");
-    const lastCode = document.getElementById("lastCode");
+    const lastCodeEl = document.getElementById("lastCode");
     const statusEl = document.getElementById("status");
     const startBtn = document.getElementById("startBtn");
     const stopBtn = document.getElementById("stopBtn");
     const manual = document.getElementById("manual");
     const sendBtn = document.getElementById("sendBtn");
+    const confirmButtons = document.getElementById("confirmButtons");
+    const confirmBtn = document.getElementById("confirmBtn");
+    const rejectBtn = document.getElementById("rejectBtn");
 
     const codeReader = new ZXing.BrowserMultiFormatReader();
     let controls = null;
+    let lastScannedCode = null;
+    let scanCount = {};
 
     function onlyDigits(s) {
       return (s || "").replace(/\D/g, "");
     }
 
+    function isValidEAN13(code) {
+      return code.length === 13;
+    }
+
+    function showCode(code, isValid) {
+      lastCodeEl.textContent = code;
+      lastCodeEl.style.display = 'block';
+      
+      if (isValid) {
+        lastCodeEl.style.borderLeft = '4px solid #4CAF50';
+      } else {
+        lastCodeEl.style.borderLeft = '4px solid #ff9800';
+      }
+    }
+
+    function hideCode() {
+      lastCodeEl.style.display = 'none';
+      confirmButtons.classList.remove('show');
+    }
+
     function sendToBot(code) {
       const digits = onlyDigits(code);
       if (!digits || digits.length < 4) {
-        statusEl.textContent = "❌ Введи код (только цифры).";
+        statusEl.className = "status error";
+        statusEl.textContent = "❌ Код должен содержать минимум 4 цифры";
         return;
       }
-      lastCode.textContent = "✅ " + digits;
-      statusEl.textContent = "Отправлено в бот…";
+      
+      statusEl.className = "status success";
+      statusEl.textContent = "✅ Отправлено в бот...";
 
       if (tg && tg.sendData) {
         tg.sendData(digits);
+        setTimeout(() => {
+          if (tg.close) tg.close();
+        }, 500);
       } else {
-        alert("Telegram WebApp API недоступен. Открой через кнопку в боте.");
+        statusEl.className = "status error";
+        statusEl.textContent = "❌ Откройте через кнопку в боте";
+      }
+    }
+
+    function handleScannedCode(code) {
+      const digits = onlyDigits(code);
+      
+      if (digits.length < 8) {
+        return; // Игнорируем слишком короткие коды
+      }
+
+      // Подсчет повторений
+      scanCount[digits] = (scanCount[digits] || 0) + 1;
+
+      // Если код отсканирован 2+ раза - скорее всего правильный
+      if (scanCount[digits] >= 2) {
+        const isValid = isValidEAN13(digits);
+        
+        if (isValid) {
+          statusEl.className = "status success";
+          statusEl.textContent = `✅ Код распознан: ${digits}`;
+          showCode(digits, true);
+          
+          // Автоотправка для валидных EAN-13
+          setTimeout(() => sendToBot(digits), 1000);
+          
+          try { if (controls) controls.stop(); } catch(e) {}
+        } else {
+          statusEl.className = "status warning";
+          statusEl.textContent = `⚠️ Код: ${digits} (не EAN-13). Проверьте!`;
+          showCode(digits, false);
+          confirmButtons.classList.add('show');
+          lastScannedCode = digits;
+          
+          try { if (controls) controls.stop(); } catch(e) {}
+        }
+        
+        scanCount = {}; // Сброс счетчика
+      } else {
+        statusEl.className = "status";
+        statusEl.textContent = `Сканирование... (${digits.slice(0, 8)}...)`;
       }
     }
 
     async function startScan() {
+      hideCode();
+      scanCount = {};
+      statusEl.className = "status";
       statusEl.textContent = "Запуск камеры…";
+      
       try {
         controls = await codeReader.decodeFromVideoDevice(
           null,
@@ -88,18 +244,15 @@
           (result, err, c) => {
             if (result) {
               const text = (result.getText() || "").trim();
-              const digits = onlyDigits(text);
-              if (digits.length >= 8) {
-                try { c.stop(); } catch(e) {}
-                statusEl.textContent = "Код распознан ✅";
-                sendToBot(digits);
-              }
+              handleScannedCode(text);
             }
           }
         );
-        statusEl.textContent = "Камера запущена. Наведи на штрихкод.";
+        statusEl.className = "status";
+        statusEl.textContent = "📷 Наведите на штрихкод";
       } catch (e) {
-        statusEl.textContent = "❌ Не удалось открыть камеру. Разреши доступ к камере или используй ручной ввод.";
+        statusEl.className = "status error";
+        statusEl.textContent = "❌ Не удалось открыть камеру";
         console.error(e);
       }
     }
@@ -107,19 +260,38 @@
     function stopScan() {
       try { if (controls) controls.stop(); } catch(e) {}
       controls = null;
-      statusEl.textContent = "Сканирование остановлено.";
+      scanCount = {};
+      statusEl.className = "status";
+      statusEl.textContent = "⏹ Сканирование остановлено";
     }
 
     startBtn.addEventListener("click", startScan);
     stopBtn.addEventListener("click", stopScan);
+
+    confirmBtn.addEventListener("click", () => {
+      if (lastScannedCode) {
+        sendToBot(lastScannedCode);
+      }
+    });
+
+    rejectBtn.addEventListener("click", () => {
+      hideCode();
+      lastScannedCode = null;
+      startScan(); // Перезапуск сканирования
+    });
 
     sendBtn.addEventListener("click", () => sendToBot(manual.value));
     manual.addEventListener("keydown", (e) => {
       if (e.key === "Enter") sendToBot(manual.value);
     });
 
-    // Не автозапускаем камеру — в некоторых телефонах блокируется без клика
-    statusEl.textContent = "Нажми ▶️ Старт, чтобы включить камеру.";
+    if (tg && tg.BackButton) {
+      tg.BackButton.show();
+      tg.BackButton.onClick(() => {
+        stopScan();
+        tg.close();
+      });
+    }
   </script>
 </body>
 </html>
